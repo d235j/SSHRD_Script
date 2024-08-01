@@ -5,7 +5,11 @@
 set -e
 oscheck=$(uname)
 
-version="$1"
+if [ $1 = "ota" ]; then
+    version="$2"
+else
+    version="$1"
+fi
 
 major=$(echo "$version" | awk -F. '{print $1}')
 minor=$(echo "$version" | awk -F. '{print $2}')
@@ -101,10 +105,11 @@ echo "[*] Getting device info and pwning... this may take a second"
 check=$("$oscheck"/irecovery -q | grep CPID | sed 's/CPID: //')
 replace=$("$oscheck"/irecovery -q | grep MODEL | sed 's/MODEL: //')
 deviceid=$("$oscheck"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
-ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$1'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
 
-if [ -e work ]; then
-    rm -rf work
+if [ ! "$1" = 'ota' ]; then
+    ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$1'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
+else
+    otaurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ota" | "$oscheck"/jq 'select(.identifier=="'$deviceid'") | .firmwares | .[] | select(.version=="9.9.'$2'") | select(.releasetype=="") | select(.prerequisiteversion=="")' | "$oscheck"/jq -s '.[0] | .url'  --raw-output)
 fi
 
 if [ -e 12rd ]; then
@@ -180,26 +185,40 @@ if [ "$1" = 'boot' ]; then
     sleep 2
     "$oscheck"/irecovery -f sshramdisk/logo.img4
     "$oscheck"/irecovery -c "setpicture 0x1"
+    echo "ramdisk"
     "$oscheck"/irecovery -f sshramdisk/ramdisk.img4
     "$oscheck"/irecovery -c ramdisk
+    echo "devicetree"
     "$oscheck"/irecovery -f sshramdisk/devicetree.img4
     "$oscheck"/irecovery -c devicetree
+    echo "$check"
     if [ "$major" -lt 11 ] || ([ "$major" -eq 11 ] && ([ "$minor" -lt 4 ] || [ "$minor" -eq 4 ] && [ "$patch" -le 1 ] || [ "$check" != '0x8012' ])); then
     :
     else
+    echo "trustcache"
     "$oscheck"/irecovery -f sshramdisk/trustcache.img4
     "$oscheck"/irecovery -c firmware
     fi
+    echo "kernelcache"
     "$oscheck"/irecovery -f sshramdisk/kernelcache.img4
+    echo "About to boot into sshramdisk mode"
+    read -p "press any key"
     "$oscheck"/irecovery -c bootx
 
     echo "[*] Device should now show text on screen"
     exit
 fi
 
-if [ -z "$1" ]; then
-    printf "1st argument: iOS version for the ramdisk\nExtra arguments:\nreset: wipes the device, without losing version.\nTrollStore: install trollstore to system app\n"
-    exit
+if [ "$1" = 'ota' ]; then
+    if [ -z "$2" ]; then
+        printf "2nd argument: iOS version for the ramdisk for OTA mode\nExtra arguments:\nreset: wipes the device, without losing version.\nTrollStore: install trollstore to system app\n"
+        exit
+    fi
+else
+    if [ -z "$1" ]; then
+        printf "1st argument: iOS version for the ramdisk\nExtra arguments:\nreset: wipes the device, without losing version.\nTrollStore: install trollstore to system app\n"
+        exit
+    fi
 fi
 
 if [ ! -e work ]; then
@@ -210,31 +229,61 @@ fi
 "$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
 
 cd work
-../"$oscheck"/pzb -g BuildManifest.plist "$ipswurl"
-../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/iBSS[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
-../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/iBEC[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
-../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/DeviceTree[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+if [ "$1" = 'ota' ]; then
+    echo "$otaurl"
+    ../"$oscheck"/pzb -g AssetData/boot/BuildManifest.plist "$otaurl"
+    ../"$oscheck"/pzb -g "AssetData/boot/$(awk "/""${replace}""/{x=1}x&&/iBSS[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$otaurl"
+    ../"$oscheck"/pzb -g "AssetData/boot/$(awk "/""${replace}""/{x=1}x&&/iBEC[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$otaurl"
+    ../"$oscheck"/pzb -g "AssetData/boot/$(awk "/""${replace}""/{x=1}x&&/DeviceTree[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$otaurl"
+else
+    ../"$oscheck"/pzb -g BuildManifest.plist "$ipswurl"
+    ../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/iBSS[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+    ../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/iBEC[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+    ../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/DeviceTree[.]/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+fi
+
 
 if [ "$oscheck" = 'Darwin' ]; then
+    echo "$major"
+    echo "$minor"
+    echo "$patch"
+    echo "$check"
+
     if [ "$major" -lt 11 ] || ([ "$major" -eq 11 ] && ([ "$minor" -lt 4 ] || [ "$minor" -eq 4 ] && [ "$patch" -le 1 ] || [ "$check" != '0x8012' ])); then
     :
+    elif [ "$1" = 'ota' ]; then
+    ../"$oscheck"/pzb -g AssetData/boot/Firmware/"$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)".trustcache "$otaurl"
     else
     ../"$oscheck"/pzb -g Firmware/"$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)".trustcache "$ipswurl"
     fi
 else
     if [ "$major" -lt 11 ] || ([ "$major" -eq 11 ] && ([ "$minor" -lt 4 ] || [ "$minor" -eq 4 ] && [ "$patch" -le 1 ] || [ "$check" != '0x8012' ])); then
     :
+    elif [ "$1" = 'ota' ]; then
+    ../"$oscheck"/pzb -g AssetData/boot/Firmware/"$(../Linux/PlistBuddy BuildManifest.plist -c "Print BuildIdentities:0:Manifest:RestoreRamDisk:Info:Path" | sed 's/"//g')".trustcache "$otaurl"
     else
     ../"$oscheck"/pzb -g Firmware/"$(../Linux/PlistBuddy BuildManifest.plist -c "Print BuildIdentities:0:Manifest:RestoreRamDisk:Info:Path" | sed 's/"//g')".trustcache "$ipswurl"
     fi
 fi
 
-../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+if [ "$1" = 'ota' ]; then
+    ../"$oscheck"/pzb -g AssetData/boot/"$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$otaurl"    
+else
+    ../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" "$ipswurl"
+fi
 
 if [ "$oscheck" = 'Darwin' ]; then
-    ../"$oscheck"/pzb -g "$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)" "$ipswurl"
+    if [ "$1" = 'ota' ]; then
+        ../"$oscheck"/pzb -g "AssetData/payload/replace/usr/standalone/update/ramdisk/arm64SURamDisk.dmg" "$otaurl"
+    else
+        ../"$oscheck"/pzb -g "$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)" "$ipswurl"
+    fi
 else
-    ../"$oscheck"/pzb -g "$(../Linux/PlistBuddy BuildManifest.plist -c "Print BuildIdentities:0:Manifest:RestoreRamDisk:Info:Path" | sed 's/"//g')" "$ipswurl"
+    if [ "$1" = 'ota' ]; then
+        ../"$oscheck"/pzb -g "AssetData/payload/replace/usr/standalone/update/ramdisk/arm64SURamDisk.dmg" "$otaurl"
+    else
+        ../"$oscheck"/pzb -g "$(../Linux/PlistBuddy BuildManifest.plist -c "Print BuildIdentities:0:Manifest:RestoreRamDisk:Info:Path" | sed 's/"//g')" "$ipswurl"
+    fi
 fi
 
 cd ..
@@ -242,7 +291,7 @@ cd ..
 "$oscheck"/gaster decrypt work/"$(awk "/""${replace}""/{x=1}x&&/iBEC[.]/{print;exit}" work/BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | sed 's/Firmware[/]dfu[/]//')" work/iBEC.dec
 "$oscheck"/iBoot64Patcher work/iBSS.dec work/iBSS.patched
 "$oscheck"/img4 -i work/iBSS.patched -o sshramdisk/iBSS.img4 -M work/IM4M -A -T ibss
-"$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi`" -n
+"$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi` `if [  "$replace" = 'b238aap' ]; then echo "serial=3"; fi`" -n
 "$oscheck"/img4 -i work/iBEC.patched -o sshramdisk/iBEC.img4 -M work/IM4M -A -T ibec
 
 "$oscheck"/img4 -i work/"$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" work/BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1)" -o work/kcache.raw
@@ -257,7 +306,11 @@ if [ "$oscheck" = 'Darwin' ]; then
         else
         "$oscheck"/img4 -i work/"$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - work/BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)".trustcache -o sshramdisk/trustcache.img4 -M work/IM4M -T rtsc
     fi
-    "$oscheck"/img4 -i work/"$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - work/BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)" -o work/ramdisk.dmg
+    if [ $1 = 'ota' ]; then
+        "$oscheck"/img4 -i work/arm64SURamDisk.dmg -o work/ramdisk.dmg
+    else
+        "$oscheck"/img4 -i work/"$(/usr/bin/plutil -extract "BuildIdentities".0."Manifest"."RestoreRamDisk"."Info"."Path" xml1 -o - work/BuildManifest.plist | grep '<string>' |cut -d\> -f2 |cut -d\< -f1 | head -1)" -o work/ramdisk.dmg
+    fi
 else
     if [ "$major" -lt 11 ] || ([ "$major" -eq 11 ] && ([ "$minor" -lt 4 ] || [ "$minor" -eq 4 ] && [ "$patch" -le 1 ] || [ "$check" != '0x8012' ])); then
     :
@@ -283,8 +336,13 @@ if [ "$oscheck" = 'Darwin' ]; then
     :
     fi
     
-    if [ "$replace" = 'j42dap' ]; then
-        "$oscheck"/gtar -x --no-overwrite-dir -f sshtars/atvssh.tar.gz -C /tmp/SSHRD/
+    echo "replace is ${replace}"
+    if [ "$replace" = 'j42dap' ] || [ "$replace" = 'b238aap' ]; then
+        echo "Using ATV SSH"
+       "$oscheck"/gtar -x --no-overwrite-dir -f sshtars/atvssh.tar.gz -C /tmp/SSHRD/
+        if [ -e /tmp/SSHRD/usr/libexec/ramrod/ramrod ]; then
+            cp -a /tmp/SSHRD/usr/local/bin/restored_external /tmp/SSHRD/usr/libexec/ramrod/ramrod
+        fi
     elif [ "$check" = '0x8012' ]; then
         "$oscheck"/gtar -x --no-overwrite-dir -f sshtars/t2ssh.tar.gz -C /tmp/SSHRD/
         echo "[!] WARNING: T2 MIGHT HANG AND DO NOTHING WHEN BOOTING THE RAMDISK!"
@@ -322,8 +380,10 @@ else
         fi
     "$oscheck"/hfsplus work/ramdisk.dmg grow 210000000 > /dev/null
 
-    if [ "$replace" = 'j42dap' ]; then
+    if [ "$replace" = 'j42dap' ] || [ "$replace" = 'b238aap' ]; then
         "$oscheck"/hfsplus work/ramdisk.dmg untar sshtars/atvssh.tar > /dev/null
+        #FIXME remove ramrod script here! /System/Library/LaunchDaemons/com.apple.ramrod.plist
+
     elif [ "$check" = '0x8012' ]; then
         "$oscheck"/hfsplus work/ramdisk.dmg untar sshtars/t2ssh.tar > /dev/null
         echo "[!] WARNING: T2 MIGHT HANG AND DO NOTHING WHEN BOOTING THE RAMDISK!"
@@ -372,6 +432,9 @@ rm -rf work 12rd
 
 echo ""
 echo "[*] Finished! Please use ./sshrd.sh boot to boot your device"
-echo $1 > sshramdisk/version.txt
-
+if [ $1 = "ota" ]; then
+    echo $2 > sshramdisk/version.txt
+else
+    echo $1 > sshramdisk/version.txt
+fi
 # } | tee "$(date +%T)"-"$(date +%F)"-"$(uname)"-"$(uname -r)".log
